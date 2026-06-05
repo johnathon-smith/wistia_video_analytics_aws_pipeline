@@ -112,3 +112,30 @@ country
 When a visitor appears multiple times, the event with the latest `received_at`
 supplies the current IP address and country. Manual runs require
 `--INGESTION_RUN_ID` and `--VALIDATION_REPORT_URI`.
+
+## Refined fact_media_engagement
+
+`build_fact_media_engagement.py` creates an unpartitioned Delta table at:
+
+```text
+s3://<data-lake-bucket>/refined/fact_media_engagement
+```
+
+The table contains:
+
+```text
+event_id          <- event_key
+visitor_id        <- visitor_key
+media_id
+date              <- UTC date from received_at
+watched_percent   <- percent_viewed
+```
+
+The job keeps one row per `event_id` and performs a Delta upsert on that key.
+`watched_percent` remains Wistia's decimal value, such as `0.75`. The table is
+currently unpartitioned to avoid tiny partitions at the present data volume.
+
+Workflow and manual parameters, Delta configuration, and IAM requirements match
+the other refined jobs. To partition later, rewrite the existing Delta table to a
+new location with derived `event_year` and `event_month` columns and validate it
+before switching consumers to the new path.
