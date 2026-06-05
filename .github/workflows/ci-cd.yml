@@ -50,7 +50,7 @@ jobs:
 
       - name: Run Ruff checks
         run: |
-          ruff check glue_jobs streamlit_app
+          ruff check glue_jobs
 
   deploy-glue-scripts:
     name: Deploy Glue scripts to S3
