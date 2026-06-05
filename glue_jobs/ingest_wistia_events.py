@@ -9,6 +9,8 @@ Required AWS Glue job arguments:
 Optional arguments:
     --S3_PREFIX          Default: ingestion/wistia/events
     --SECRET_REGION      Default: the Glue job's AWS region
+    --WORKFLOW_NAME      Supplied by AWS Glue when run in a workflow
+    --WORKFLOW_RUN_ID    Supplied by AWS Glue when run in a workflow
 
 MEDIA_IDS accepts either a comma-separated string or a JSON array.
 The secret may be a plain token or a JSON object containing one of:
@@ -61,6 +63,8 @@ class JobConfig:
     s3_bucket: str
     s3_prefix: str
     media_ids: tuple[str, ...]
+    workflow_name: str | None
+    workflow_run_id: str | None
 
 
 def configure_logging() -> None:
@@ -114,6 +118,8 @@ def load_config() -> JobConfig:
         s3_bucket=required["S3_BUCKET"],
         s3_prefix=prefix.strip("/"),
         media_ids=parse_media_ids(required["MEDIA_IDS"]),
+        workflow_name=parse_optional_argument("WORKFLOW_NAME"),
+        workflow_run_id=parse_optional_argument("WORKFLOW_RUN_ID"),
     )
 
 
@@ -425,6 +431,36 @@ def write_manifest(
     return f"s3://{config.s3_bucket}/{manifest_key}"
 
 
+def publish_ingestion_workflow_properties(
+    glue_client: Any,
+    config: JobConfig,
+    manifest_uri: str,
+    run_id: str,
+) -> None:
+    if not config.workflow_name and not config.workflow_run_id:
+        LOGGER.info("No Glue workflow context found; skipping workflow property publication.")
+        return
+    if not config.workflow_name or not config.workflow_run_id:
+        raise WistiaIngestionError(
+            "WORKFLOW_NAME and WORKFLOW_RUN_ID must both be supplied for workflow publication."
+        )
+
+    try:
+        glue_client.put_workflow_run_properties(
+            Name=config.workflow_name,
+            RunId=config.workflow_run_id,
+            RunProperties={
+                "INGESTION_MANIFEST_URI": manifest_uri,
+                "INGESTION_RUN_ID": run_id,
+            },
+        )
+    except (BotoCoreError, ClientError) as exc:
+        raise WistiaIngestionError(
+            f"Unable to publish ingestion properties for workflow "
+            f"{config.workflow_name!r}, run {config.workflow_run_id!r}."
+        ) from exc
+
+
 def main() -> None:
     configure_logging()
     config = load_config()
@@ -445,6 +481,7 @@ def main() -> None:
     api_token = get_api_token(config.secret_id, config.secret_region)
     session = build_session(api_token)
     s3_client = boto3.client("s3")
+    glue_client = boto3.client("glue")
     results: list[dict[str, Any]] = []
 
     try:
@@ -470,6 +507,12 @@ def main() -> None:
             start_date=start_date,
             end_date=end_date,
             results=results,
+        )
+        publish_ingestion_workflow_properties(
+            glue_client=glue_client,
+            config=config,
+            manifest_uri=manifest_uri,
+            run_id=run_id,
         )
     finally:
         session.close()
