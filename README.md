@@ -91,3 +91,24 @@ The job does not register the Delta table in the Glue Data Catalog.
 The execution role needs `s3:GetObject` for the validation report and raw object,
 plus `s3:ListBucket` and `s3:PutObject` for the Delta table location. Include
 `s3:DeleteObject` if later maintenance or vacuum operations will remove Delta files.
+
+## Refined dim_visitors
+
+`build_dim_visitors.py` follows the same workflow/manual input contract and Delta
+configuration as `build_dim_media.py`. It upserts on `visitor_id` at:
+
+```text
+s3://<data-lake-bucket>/refined/dim_visitors
+```
+
+The table contains:
+
+```text
+visitor_id   <- visitor_key
+ip_address   <- ip
+country
+```
+
+When a visitor appears multiple times, the event with the latest `received_at`
+supplies the current IP address and country. Manual runs require
+`--INGESTION_RUN_ID` and `--VALIDATION_REPORT_URI`.
