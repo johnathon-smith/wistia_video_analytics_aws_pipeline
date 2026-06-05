@@ -30,6 +30,11 @@ parameters override its default output prefixes:
 --REPORT_PREFIX validation_reports/wistia/events
 ```
 
+The validation job creates a quarantine S3 object only when one or more records
+fail validation. For a clean run, the report contains a quarantine count of `0`
+and `quarantine_s3_uri` is `null`, allowing S3 object-created notifications under
+the quarantine prefix to represent actual data-quality problems.
+
 ### IAM permissions
 
 The shared Glue execution role needs access to the data-lake objects and these Glue

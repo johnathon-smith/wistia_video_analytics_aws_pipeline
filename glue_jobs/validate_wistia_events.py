@@ -534,13 +534,14 @@ def process_manifest(
             "manifest-uri": manifest_uri,
         }
         upload_gzip_file(s3_client, raw_path, manifest_bucket, raw_key, metadata)
-        upload_gzip_file(
-            s3_client,
-            quarantine_path,
-            manifest_bucket,
-            quarantine_key,
-            metadata,
-        )
+        if stats.quarantined_records > 0:
+            upload_gzip_file(
+                s3_client,
+                quarantine_path,
+                manifest_bucket,
+                quarantine_key,
+                metadata,
+            )
     finally:
         for path in (raw_path, quarantine_path):
             if path:
@@ -550,7 +551,11 @@ def process_manifest(
                     pass
 
     raw_uri = f"s3://{manifest_bucket}/{raw_key}"
-    quarantine_uri = f"s3://{manifest_bucket}/{quarantine_key}"
+    quarantine_uri = (
+        f"s3://{manifest_bucket}/{quarantine_key}"
+        if stats.quarantined_records > 0
+        else None
+    )
     report_uri = f"s3://{manifest_bucket}/{report_key}"
     report = {
         "additive_drift_detected": bool(unknown_fields),

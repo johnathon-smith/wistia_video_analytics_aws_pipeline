@@ -216,6 +216,49 @@ class StreamingValidationTests(unittest.TestCase):
         ).decode().splitlines()
         self.assertEqual(2, len(quarantine_lines))
 
+    def test_process_manifest_does_not_create_empty_quarantine_object(self):
+        manifest_uri = "s3://lake/ingestion/manifest.json"
+        source_uri = "s3://lake/ingestion/events.jsonl.gz"
+        manifest = {
+            "extracted_at": "2026-06-05T12:00:00Z",
+            "results": [{"s3_uri": source_uri}],
+            "run_id": "run-valid-only",
+            "total_event_count": 1,
+        }
+        s3_client = self.FakeS3Client(
+            {
+                ("lake", "ingestion/manifest.json"): json.dumps(manifest).encode(),
+                ("lake", "ingestion/events.jsonl.gz"): gzip.compress(
+                    (json.dumps(valid_event()) + "\n").encode(), mtime=0
+                ),
+            }
+        )
+        config = validator.JobConfig(
+            job_name="validator",
+            input_manifest_uri=manifest_uri,
+            raw_prefix="raw/wistia/events",
+            quarantine_prefix="quarantine/wistia/events",
+            report_prefix="validation_reports/wistia/events",
+            workflow_name=None,
+            workflow_run_id=None,
+        )
+
+        report = validator.process_manifest(
+            s3_client,
+            config,
+            manifest_uri,
+            datetime(2026, 6, 5, 13, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(0, report["quarantined_record_count"])
+        self.assertIsNone(report["quarantine_s3_uri"])
+        quarantine_objects = [
+            key
+            for bucket, key in s3_client.objects
+            if bucket == "lake" and key.startswith("quarantine/")
+        ]
+        self.assertEqual([], quarantine_objects)
+
 
 if __name__ == "__main__":
     unittest.main()
