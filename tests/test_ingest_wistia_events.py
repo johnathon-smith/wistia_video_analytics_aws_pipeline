@@ -1,7 +1,9 @@
 import importlib.util
+import json
 import sys
 import types
 import unittest
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -32,6 +34,7 @@ class WorkflowPublicationTests(unittest.TestCase):
             secret_region=None,
             s3_bucket="bucket",
             s3_prefix="ingestion/wistia/events",
+            manifest_prefix="metadata/wistia/events/manifests",
             media_ids=("media-1", "media-2"),
             workflow_name=workflow_name,
             workflow_run_id=workflow_run_id,
@@ -72,6 +75,54 @@ class WorkflowPublicationTests(unittest.TestCase):
                 "s3://bucket/manifest.json",
                 "ingestion-run",
             )
+
+
+class ManifestTests(unittest.TestCase):
+    def test_manifest_uses_metadata_prefix(self):
+        config = ingestion.JobConfig(
+            job_name="ingestion",
+            secret_id="secret",
+            secret_region=None,
+            s3_bucket="bucket",
+            s3_prefix="ingestion/wistia/events",
+            manifest_prefix="metadata/wistia/events/manifests",
+            media_ids=("media-1",),
+            workflow_name=None,
+            workflow_run_id=None,
+        )
+        s3_client = Mock()
+        manifest_uri = ingestion.write_manifest(
+            s3_client=s3_client,
+            config=config,
+            extraction_time=datetime(2026, 6, 5, 17, 30, tzinfo=timezone.utc),
+            run_id="run-123",
+            start_date=date(2024, 6, 5),
+            end_date=date(2026, 6, 5),
+            results=[
+                {
+                    "event_count": 1,
+                    "media_id": "media-1",
+                    "page_count": 1,
+                    "s3_uri": "s3://bucket/ingestion/events.jsonl.gz",
+                    "status": "succeeded",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            "s3://bucket/metadata/wistia/events/manifests/"
+            "extraction_date=2026-06-05/"
+            "manifest_20260605T173000Z_run-123.json",
+            manifest_uri,
+        )
+        put_call = s3_client.put_object.call_args.kwargs
+        self.assertEqual("bucket", put_call["Bucket"])
+        self.assertEqual(
+            "metadata/wistia/events/manifests/extraction_date=2026-06-05/"
+            "manifest_20260605T173000Z_run-123.json",
+            put_call["Key"],
+        )
+        self.assertEqual("run-123", json.loads(put_call["Body"])["run_id"])
 
 
 if __name__ == "__main__":

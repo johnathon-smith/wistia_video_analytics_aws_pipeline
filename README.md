@@ -13,6 +13,15 @@ workflow. The ingestion job publishes `INGESTION_MANIFEST_URI` for its run. The
 validation job reads that property, so it processes the exact manifest produced by
 the preceding ingestion job.
 
+The ingestion job stores manifests separately from temporary ingestion data. Its
+default manifest prefix is:
+
+```text
+metadata/wistia/events/manifests
+```
+
+Override it with the ingestion job parameter `--MANIFEST_PREFIX`.
+
 For a manual validation run outside the workflow, provide:
 
 ```text

@@ -8,6 +8,7 @@ Required AWS Glue job arguments:
 
 Optional arguments:
     --S3_PREFIX          Default: ingestion/wistia/events
+    --MANIFEST_PREFIX    Default: metadata/wistia/events/manifests
     --SECRET_REGION      Default: the Glue job's AWS region
     --WORKFLOW_NAME      Supplied by AWS Glue when run in a workflow
     --WORKFLOW_RUN_ID    Supplied by AWS Glue when run in a workflow
@@ -62,6 +63,7 @@ class JobConfig:
     secret_region: str | None
     s3_bucket: str
     s3_prefix: str
+    manifest_prefix: str
     media_ids: tuple[str, ...]
     workflow_name: str | None
     workflow_run_id: str | None
@@ -109,7 +111,11 @@ def load_config() -> JobConfig:
         ["JOB_NAME", "SECRET_ID", "S3_BUCKET", "MEDIA_IDS"],
     )
     prefix = parse_optional_argument("S3_PREFIX", "ingestion/wistia/events")
+    manifest_prefix = parse_optional_argument(
+        "MANIFEST_PREFIX", "metadata/wistia/events/manifests"
+    )
     assert prefix is not None
+    assert manifest_prefix is not None
 
     return JobConfig(
         job_name=required["JOB_NAME"],
@@ -117,6 +123,7 @@ def load_config() -> JobConfig:
         secret_region=parse_optional_argument("SECRET_REGION"),
         s3_bucket=required["S3_BUCKET"],
         s3_prefix=prefix.strip("/"),
+        manifest_prefix=manifest_prefix.strip("/"),
         media_ids=parse_media_ids(required["MEDIA_IDS"]),
         workflow_name=parse_optional_argument("WORKFLOW_NAME"),
         workflow_run_id=parse_optional_argument("WORKFLOW_RUN_ID"),
@@ -400,8 +407,8 @@ def write_manifest(
     results: list[dict[str, Any]],
 ) -> str:
     manifest_key = (
-        f"{config.s3_prefix}/extraction_date={extraction_time:%Y-%m-%d}/"
-        f"_manifests/manifest_{extraction_time:%Y%m%dT%H%M%SZ}_{run_id}.json"
+        f"{config.manifest_prefix}/extraction_date={extraction_time:%Y-%m-%d}/"
+        f"manifest_{extraction_time:%Y%m%dT%H%M%SZ}_{run_id}.json"
     )
     manifest = {
         "api_url": API_URL,
