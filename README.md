@@ -58,3 +58,36 @@ s3:PutObject
 
 The ingestion job also needs `secretsmanager:GetSecretValue` and any applicable
 KMS permissions.
+
+## Refined dim_media
+
+`build_dim_media.py` reads the validated raw object for one ingestion run and
+upserts a Delta table at:
+
+```text
+s3://<data-lake-bucket>/refined/dim_media
+```
+
+The table contains `media_id`, `title`, `url`, and `channel`. Channel is derived
+case-insensitively from `Youtube` or `Facebook` in the Wistia media title.
+
+Workflow runs read `INGESTION_RUN_ID` and `VALIDATION_REPORT_URI` from workflow
+properties. For a manual run, supply both:
+
+```text
+--INGESTION_RUN_ID <ingestion-run-id>
+--VALIDATION_REPORT_URI s3://<bucket>/validation_reports/wistia/events/.../report.json
+```
+
+Configure this as a Spark Glue job with Delta enabled:
+
+```text
+--datalake-formats delta
+--conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+```
+
+The job does not register the Delta table in the Glue Data Catalog.
+
+The execution role needs `s3:GetObject` for the validation report and raw object,
+plus `s3:ListBucket` and `s3:PutObject` for the Delta table location. Include
+`s3:DeleteObject` if later maintenance or vacuum operations will remove Delta files.
