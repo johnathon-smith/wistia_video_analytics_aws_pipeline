@@ -139,3 +139,39 @@ Workflow and manual parameters, Delta configuration, and IAM requirements match
 the other refined jobs. To partition later, rewrite the existing Delta table to a
 new location with derived `event_year` and `event_month` columns and validate it
 before switching consumers to the new path.
+
+## Curated visitor_engagement
+
+`build_visitor_engagement.py` reads the complete refined
+`fact_media_engagement` Delta table and rebuilds an unpartitioned curated Delta
+table at:
+
+```text
+s3://<data-lake-bucket>/curated/visitor_engagement
+```
+
+It produces one row per `visitor_id` and `media_id` with:
+
+```text
+visitor_id
+media_id
+total_views
+avg_pct_viewed
+max_pct_viewed
+first_date_watched
+last_date_watched
+```
+
+The aggregate is fully recomputed and atomically overwritten each run so
+corrections to the refined fact table cannot leave stale groups behind. Workflow
+runs consume `FACT_MEDIA_ENGAGEMENT_TABLE_URI` and verify it was produced for the
+current ingestion run.
+
+For a manual run, supply:
+
+```text
+--INGESTION_RUN_ID <ingestion-run-id>
+--FACT_MEDIA_ENGAGEMENT_TABLE_URI s3://<bucket>/refined/fact_media_engagement
+```
+
+Use the same Delta Spark configuration and IAM permissions as the refined jobs.
