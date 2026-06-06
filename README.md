@@ -175,3 +175,39 @@ For a manual run, supply:
 ```
 
 Use the same Delta Spark configuration and IAM permissions as the refined jobs.
+
+## Streamlit dashboard
+
+The dashboard entrypoint is `streamlit_app/app.py`. It reads the curated Delta
+table directly from S3 with `delta-rs` and optionally enriches it with `dim_media`
+and `dim_visitors`.
+
+For local development:
+
+```text
+pip install -r streamlit_app/requirements.txt
+streamlit run streamlit_app/app.py
+```
+
+Create `streamlit_app/.streamlit/secrets.toml` from
+`secrets.toml.example`. Never commit the real secrets file. In Streamlit
+Community Cloud, use `streamlit_app/app.py` as the entrypoint and paste the same
+TOML into the app's Secrets settings.
+
+The AWS identity only needs read access:
+
+```text
+s3:ListBucket
+s3:GetObject
+```
+
+Scope those permissions to the three Delta table prefixes. The dashboard caches
+data for 15 minutes and includes a manual refresh button.
+
+For a local UI preview using synthetic records instead of AWS data:
+
+```text
+WISTIA_DASHBOARD_DEMO_MODE=true streamlit run streamlit_app/app.py
+```
+
+Do not set that environment variable in the production Streamlit app.
