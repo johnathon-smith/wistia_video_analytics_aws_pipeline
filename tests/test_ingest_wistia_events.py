@@ -26,6 +26,53 @@ def load_module():
 ingestion = load_module()
 
 
+class DateWindowTests(unittest.TestCase):
+    def test_defaults_to_latest_completed_utc_day(self):
+        self.assertEqual(
+            (date(2026, 6, 5), date(2026, 6, 5)),
+            ingestion.resolve_date_window(date(2026, 6, 6), None, None),
+        )
+
+    def test_accepts_manual_date_range(self):
+        self.assertEqual(
+            (date(2026, 5, 1), date(2026, 5, 31)),
+            ingestion.resolve_date_window(
+                date(2026, 6, 6),
+                "2026-05-01",
+                "2026-05-31",
+            ),
+        )
+
+    def test_requires_both_manual_dates(self):
+        with self.assertRaisesRegex(
+            ingestion.WistiaIngestionError,
+            "must either both be supplied",
+        ):
+            ingestion.resolve_date_window(date(2026, 6, 6), "2026-05-01", None)
+
+    def test_rejects_invalid_date(self):
+        with self.assertRaisesRegex(
+            ingestion.WistiaIngestionError,
+            "YYYY-MM-DD",
+        ):
+            ingestion.resolve_date_window(
+                date(2026, 6, 6),
+                "2026-02-30",
+                "2026-03-01",
+            )
+
+    def test_rejects_reversed_range(self):
+        with self.assertRaisesRegex(
+            ingestion.WistiaIngestionError,
+            "cannot be later",
+        ):
+            ingestion.resolve_date_window(
+                date(2026, 6, 6),
+                "2026-05-31",
+                "2026-05-01",
+            )
+
+
 class WorkflowPublicationTests(unittest.TestCase):
     def config(self, workflow_name=None, workflow_run_id=None):
         return ingestion.JobConfig(

@@ -22,6 +22,28 @@ metadata/wistia/events/manifests
 
 Override it with the ingestion job parameter `--MANIFEST_PREFIX`.
 
+### Ingestion date parameters
+
+Scheduled ingestion runs default to the latest fully completed UTC day. For
+example, a run on June 6 processes June 5:
+
+```text
+start_date=2026-06-05
+end_date=2026-06-05
+```
+
+No date parameters are needed on the Glue workflow job for this daily behavior.
+For a manual backfill or rerun, supply both optional parameters:
+
+```text
+--START_DATE 2026-05-01
+--END_DATE 2026-05-31
+```
+
+Dates use `YYYY-MM-DD`. Both parameters must be supplied together, and
+`START_DATE` cannot be later than `END_DATE`. The selected dates are recorded in
+the S3 object metadata and ingestion manifest.
+
 For a manual validation run outside the workflow, provide:
 
 ```text

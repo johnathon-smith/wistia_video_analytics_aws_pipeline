@@ -10,12 +10,17 @@ Optional arguments:
     --S3_PREFIX          Default: ingestion/wistia/events
     --MANIFEST_PREFIX    Default: metadata/wistia/events/manifests
     --SECRET_REGION      Default: the Glue job's AWS region
+    --START_DATE         Manual range start in YYYY-MM-DD format
+    --END_DATE           Manual range end in YYYY-MM-DD format
     --WORKFLOW_NAME      Supplied by AWS Glue when run in a workflow
     --WORKFLOW_RUN_ID    Supplied by AWS Glue when run in a workflow
 
 MEDIA_IDS accepts either a comma-separated string or a JSON array.
 The secret may be a plain token or a JSON object containing one of:
 api_token, token, wistia_api_token, or WISTIA_API_TOKEN.
+
+START_DATE and END_DATE must be supplied together. When neither is supplied, the
+job ingests yesterday in UTC, the latest fully completed day.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -67,6 +72,8 @@ class JobConfig:
     media_ids: tuple[str, ...]
     workflow_name: str | None
     workflow_run_id: str | None
+    start_date_override: str | None = None
+    end_date_override: str | None = None
 
 
 def configure_logging() -> None:
@@ -127,16 +134,41 @@ def load_config() -> JobConfig:
         media_ids=parse_media_ids(required["MEDIA_IDS"]),
         workflow_name=parse_optional_argument("WORKFLOW_NAME"),
         workflow_run_id=parse_optional_argument("WORKFLOW_RUN_ID"),
+        start_date_override=parse_optional_argument("START_DATE"),
+        end_date_override=parse_optional_argument("END_DATE"),
     )
 
 
-def two_year_window(run_date: date) -> tuple[date, date]:
+def parse_date_argument(name: str, value: str) -> date:
     try:
-        start_date = run_date.replace(year=run_date.year - 2)
-    except ValueError:
-        # February 29 has no direct counterpart in a non-leap year.
-        start_date = run_date.replace(year=run_date.year - 2, day=28)
-    return start_date, run_date
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise WistiaIngestionError(
+            f"{name} must be a valid date in YYYY-MM-DD format; received {value!r}."
+        ) from exc
+
+
+def resolve_date_window(
+    run_date: date,
+    start_date_override: str | None,
+    end_date_override: str | None,
+) -> tuple[date, date]:
+    if not start_date_override and not end_date_override:
+        latest_completed_date = run_date - timedelta(days=1)
+        return latest_completed_date, latest_completed_date
+
+    if not start_date_override or not end_date_override:
+        raise WistiaIngestionError(
+            "START_DATE and END_DATE must either both be supplied or both be omitted."
+        )
+
+    start_date = parse_date_argument("START_DATE", start_date_override)
+    end_date = parse_date_argument("END_DATE", end_date_override)
+    if start_date > end_date:
+        raise WistiaIngestionError(
+            f"START_DATE {start_date} cannot be later than END_DATE {end_date}."
+        )
+    return start_date, end_date
 
 
 def get_api_token(secret_id: str, region_name: str | None) -> str:
@@ -472,7 +504,11 @@ def main() -> None:
     configure_logging()
     config = load_config()
     extraction_time = datetime.now(timezone.utc)
-    start_date, end_date = two_year_window(extraction_time.date())
+    start_date, end_date = resolve_date_window(
+        extraction_time.date(),
+        config.start_date_override,
+        config.end_date_override,
+    )
     run_id = uuid.uuid4().hex
 
     LOGGER.info(
