@@ -189,12 +189,23 @@ corrections to the refined fact table cannot leave stale groups behind. Workflow
 runs consume `FACT_MEDIA_ENGAGEMENT_TABLE_URI` and verify it was produced for the
 current ingestion run.
 
+The curated table also stores `data_through_date`, `pipeline_refreshed_at`, and
+`ingestion_run_id` on each row. The Streamlit dashboard uses these audit fields
+to display the latest successfully processed Wistia date. This is more reliable
+than using `last_date_watched`, because a successfully processed day may contain
+no viewing activity.
+
 For a manual run, supply:
 
 ```text
 --INGESTION_RUN_ID <ingestion-run-id>
 --FACT_MEDIA_ENGAGEMENT_TABLE_URI s3://<bucket>/refined/fact_media_engagement
+--DATA_THROUGH_DATE 2026-06-05
 ```
+
+`--DATA_THROUGH_DATE` is optional for manual runs but recommended so the
+dashboard can report freshness. Workflow runs receive the date automatically
+from the ingestion job.
 
 Use the same Delta Spark configuration and IAM permissions as the refined jobs.
 

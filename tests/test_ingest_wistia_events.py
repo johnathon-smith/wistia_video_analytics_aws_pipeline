@@ -94,6 +94,8 @@ class WorkflowPublicationTests(unittest.TestCase):
             self.config("workflow", "workflow-run"),
             "s3://bucket/manifest.json",
             "ingestion-run",
+            date(2026, 6, 5),
+            date(2026, 6, 5),
         )
         glue_client.put_workflow_run_properties.assert_called_once_with(
             Name="workflow",
@@ -101,6 +103,8 @@ class WorkflowPublicationTests(unittest.TestCase):
             RunProperties={
                 "INGESTION_MANIFEST_URI": "s3://bucket/manifest.json",
                 "INGESTION_RUN_ID": "ingestion-run",
+                "INGESTION_START_DATE": "2026-06-05",
+                "INGESTION_END_DATE": "2026-06-05",
             },
         )
 
@@ -111,6 +115,8 @@ class WorkflowPublicationTests(unittest.TestCase):
             self.config(),
             "s3://bucket/manifest.json",
             "ingestion-run",
+            date(2026, 6, 5),
+            date(2026, 6, 5),
         )
         glue_client.put_workflow_run_properties.assert_not_called()
 
@@ -121,6 +127,8 @@ class WorkflowPublicationTests(unittest.TestCase):
                 self.config(workflow_name="workflow"),
                 "s3://bucket/manifest.json",
                 "ingestion-run",
+                date(2026, 6, 5),
+                date(2026, 6, 5),
             )
 
 

@@ -10,6 +10,7 @@ Input resolution order:
 Optional arguments:
     --INGESTION_RUN_ID
     --FACT_MEDIA_ENGAGEMENT_TABLE_URI
+    --DATA_THROUGH_DATE               Manual run date in YYYY-MM-DD format
     --CURATED_PREFIX                  Default: curated/visitor_engagement
     --VISITOR_ENGAGEMENT_TABLE_URI    Overrides the inferred Delta table URI
     --WORKFLOW_NAME                   Supplied by AWS Glue in a workflow
@@ -26,6 +27,7 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -50,12 +52,14 @@ class JobConfig:
     visitor_engagement_table_uri: str | None
     workflow_name: str | None
     workflow_run_id: str | None
+    data_through_date: str | None = None
 
 
 @dataclass(frozen=True)
 class RunInput:
     ingestion_run_id: str
     fact_media_engagement_table_uri: str
+    data_through_date: date | None = None
 
 
 def configure_logging() -> None:
@@ -94,6 +98,7 @@ def load_config() -> JobConfig:
         ),
         workflow_name=parse_optional_argument("WORKFLOW_NAME"),
         workflow_run_id=parse_optional_argument("WORKFLOW_RUN_ID"),
+        data_through_date=parse_optional_argument("DATA_THROUGH_DATE"),
     )
 
 
@@ -114,6 +119,17 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
     return parsed.netloc, parsed.path.lstrip("/")
 
 
+def parse_data_through_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise VisitorEngagementError(
+            f"DATA_THROUGH_DATE must use YYYY-MM-DD format; received {value!r}."
+        ) from exc
+
+
 def resolve_run_input(glue_client: Any, config: JobConfig) -> RunInput:
     if config.ingestion_run_id or config.fact_media_engagement_table_uri:
         if not config.ingestion_run_id or not config.fact_media_engagement_table_uri:
@@ -127,6 +143,7 @@ def resolve_run_input(glue_client: Any, config: JobConfig) -> RunInput:
             fact_media_engagement_table_uri=(
                 config.fact_media_engagement_table_uri.rstrip("/")
             ),
+            data_through_date=parse_data_through_date(config.data_through_date),
         )
 
     context = workflow_context(config)
@@ -151,6 +168,7 @@ def resolve_run_input(glue_client: Any, config: JobConfig) -> RunInput:
     ingestion_run_id = properties.get("INGESTION_RUN_ID")
     fact_table_uri = properties.get("FACT_MEDIA_ENGAGEMENT_TABLE_URI")
     fact_run_id = properties.get("FACT_MEDIA_ENGAGEMENT_INGESTION_RUN_ID")
+    data_through_date = properties.get("INGESTION_END_DATE")
     if not ingestion_run_id or not fact_table_uri or not fact_run_id:
         raise VisitorEngagementError(
             "The workflow run must contain INGESTION_RUN_ID, "
@@ -166,6 +184,7 @@ def resolve_run_input(glue_client: Any, config: JobConfig) -> RunInput:
     return RunInput(
         ingestion_run_id=ingestion_run_id,
         fact_media_engagement_table_uri=fact_table_uri.rstrip("/"),
+        data_through_date=parse_data_through_date(data_through_date),
     )
 
 
@@ -177,10 +196,16 @@ def resolve_table_uri(run_input: RunInput, config: JobConfig) -> str:
     return f"s3://{bucket}/{config.curated_prefix}"
 
 
-def build_aggregate_dataframe(spark: Any, fact_table_uri: str) -> Any:
+def build_aggregate_dataframe(
+    spark: Any,
+    run_input: RunInput,
+    refreshed_at: datetime,
+) -> Any:
     from pyspark.sql import functions as functions
 
-    fact = spark.read.format("delta").load(fact_table_uri)
+    fact = spark.read.format("delta").load(
+        run_input.fact_media_engagement_table_uri
+    )
     required_columns = {
         "event_id",
         "visitor_id",
@@ -194,7 +219,7 @@ def build_aggregate_dataframe(spark: Any, fact_table_uri: str) -> Any:
             f"Fact table is missing required columns: {', '.join(missing_columns)}."
         )
 
-    return (
+    aggregate = (
         fact.groupBy("visitor_id", "media_id")
         .agg(
             functions.count("event_id").cast("long").alias("total_views"),
@@ -211,6 +236,20 @@ def build_aggregate_dataframe(spark: Any, fact_table_uri: str) -> Any:
             "max_pct_viewed",
             "first_date_watched",
             "last_date_watched",
+        )
+    )
+    return (
+        aggregate.withColumn(
+            "data_through_date",
+            functions.lit(run_input.data_through_date).cast("date"),
+        )
+        .withColumn(
+            "pipeline_refreshed_at",
+            functions.lit(refreshed_at).cast("timestamp"),
+        )
+        .withColumn(
+            "ingestion_run_id",
+            functions.lit(run_input.ingestion_run_id),
         )
     )
 
@@ -285,7 +324,8 @@ def main() -> None:
     )
     aggregate = build_aggregate_dataframe(
         spark,
-        run_input.fact_media_engagement_table_uri,
+        run_input,
+        datetime.now(timezone.utc),
     )
     row_count = write_delta_table(aggregate, table_uri)
     publish_workflow_properties(

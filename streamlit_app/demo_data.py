@@ -56,6 +56,9 @@ def load_demo_data() -> tuple[pd.DataFrame, dict[str, object]]:
     metadata = {
         "curated_version": "demo",
         "loaded_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "data_through_date": frame["last_date_watched"].max().date(),
+        "pipeline_refreshed_at": datetime.now(timezone.utc),
+        "ingestion_run_id": "demo",
         "media_labels": {
             media_id: title for media_id, title, _channel in media
         },

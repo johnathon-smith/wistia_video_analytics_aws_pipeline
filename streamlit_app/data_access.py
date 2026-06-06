@@ -99,6 +99,25 @@ def normalize_engagement(frame: pd.DataFrame) -> pd.DataFrame:
     return normalized
 
 
+def pipeline_metadata(frame: pd.DataFrame) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if "data_through_date" in frame.columns:
+        values = pd.to_datetime(frame["data_through_date"], errors="coerce").dropna()
+        if not values.empty:
+            metadata["data_through_date"] = values.max().date()
+    if "pipeline_refreshed_at" in frame.columns:
+        values = pd.to_datetime(
+            frame["pipeline_refreshed_at"], errors="coerce", utc=True
+        ).dropna()
+        if not values.empty:
+            metadata["pipeline_refreshed_at"] = values.max().to_pydatetime()
+    if "ingestion_run_id" in frame.columns:
+        values = frame["ingestion_run_id"].dropna()
+        if not values.empty:
+            metadata["ingestion_run_id"] = str(values.iloc[-1])
+    return metadata
+
+
 def enrich_dashboard_data(
     engagement: pd.DataFrame,
     media: pd.DataFrame | None,
@@ -158,6 +177,7 @@ def load_dashboard_data(
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     options = config.storage_options()
     engagement, curated_version = _read_delta(config.curated_table_uri, options)
+    freshness = pipeline_metadata(engagement)
 
     media = None
     if config.media_table_uri:
@@ -178,5 +198,6 @@ def load_dashboard_data(
         "curated_version": curated_version,
         "loaded_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "media_labels": media_labels,
+        **freshness,
     }
     return enriched, metadata

@@ -475,6 +475,8 @@ def publish_ingestion_workflow_properties(
     config: JobConfig,
     manifest_uri: str,
     run_id: str,
+    start_date: date,
+    end_date: date,
 ) -> None:
     if not config.workflow_name and not config.workflow_run_id:
         LOGGER.info("No Glue workflow context found; skipping workflow property publication.")
@@ -491,6 +493,8 @@ def publish_ingestion_workflow_properties(
             RunProperties={
                 "INGESTION_MANIFEST_URI": manifest_uri,
                 "INGESTION_RUN_ID": run_id,
+                "INGESTION_START_DATE": start_date.isoformat(),
+                "INGESTION_END_DATE": end_date.isoformat(),
             },
         )
     except (BotoCoreError, ClientError) as exc:
@@ -556,6 +560,8 @@ def main() -> None:
             config=config,
             manifest_uri=manifest_uri,
             run_id=run_id,
+            start_date=start_date,
+            end_date=end_date,
         )
     finally:
         session.close()

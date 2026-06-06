@@ -205,6 +205,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+data_through_date = metadata.get("data_through_date")
+pipeline_refreshed_at = metadata.get("pipeline_refreshed_at")
+if data_through_date:
+    freshness_text = f"Data through {data_through_date:%B %d, %Y}"
+    if pipeline_refreshed_at:
+        freshness_text += (
+            f" · Pipeline refreshed "
+            f"{pipeline_refreshed_at:%B %d, %Y at %H:%M UTC}"
+        )
+    st.success(freshness_text)
+else:
+    st.info(
+        "Pipeline freshness metadata will appear after the next curated Glue job run."
+    )
+
 unique_visitors = filtered["visitor_id"].nunique()
 total_views = filtered["total_views"].sum()
 weighted_average = (

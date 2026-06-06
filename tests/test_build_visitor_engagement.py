@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -35,6 +36,7 @@ class InputResolutionTests(unittest.TestCase):
         fact_table_uri=None,
         workflow_name=None,
         workflow_run_id=None,
+        data_through_date=None,
     ):
         return visitor_engagement.JobConfig(
             job_name="build-visitor-engagement",
@@ -44,6 +46,7 @@ class InputResolutionTests(unittest.TestCase):
             visitor_engagement_table_uri=None,
             workflow_name=workflow_name,
             workflow_run_id=workflow_run_id,
+            data_through_date=data_through_date,
         )
 
     def test_manual_parameters_override_workflow(self):
@@ -73,6 +76,7 @@ class InputResolutionTests(unittest.TestCase):
                     "s3://lake/refined/fact_media_engagement"
                 ),
                 "FACT_MEDIA_ENGAGEMENT_INGESTION_RUN_ID": "ingestion-run",
+                "INGESTION_END_DATE": "2026-06-05",
             }
         }
         run_input = visitor_engagement.resolve_run_input(
@@ -80,6 +84,18 @@ class InputResolutionTests(unittest.TestCase):
             self.config(workflow_name="workflow", workflow_run_id="workflow-run"),
         )
         self.assertEqual("ingestion-run", run_input.ingestion_run_id)
+        self.assertEqual(date(2026, 6, 5), run_input.data_through_date)
+
+    def test_manual_data_through_date_is_parsed(self):
+        run_input = visitor_engagement.resolve_run_input(
+            Mock(),
+            self.config(
+                ingestion_run_id="manual-run",
+                fact_table_uri="s3://lake/refined/fact_media_engagement",
+                data_through_date="2026-06-05",
+            ),
+        )
+        self.assertEqual(date(2026, 6, 5), run_input.data_through_date)
 
     def test_workflow_fact_run_id_mismatch_fails(self):
         glue_client = Mock()

@@ -64,6 +64,24 @@ class ConfigTests(unittest.TestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_pipeline_metadata_reads_curated_audit_columns(self):
+        frame = pd.DataFrame(
+            {
+                "data_through_date": ["2026-06-05"],
+                "pipeline_refreshed_at": ["2026-06-06T08:15:00Z"],
+                "ingestion_run_id": ["run-123"],
+            }
+        )
+
+        metadata = data_access.pipeline_metadata(frame)
+
+        self.assertEqual(pd.Timestamp("2026-06-05").date(), metadata["data_through_date"])
+        self.assertEqual("run-123", metadata["ingestion_run_id"])
+        self.assertEqual(
+            pd.Timestamp("2026-06-06T08:15:00Z").to_pydatetime(),
+            metadata["pipeline_refreshed_at"],
+        )
+
     def test_missing_curated_column_fails(self):
         frame = Mock()
         frame.columns = ["visitor_id"]
