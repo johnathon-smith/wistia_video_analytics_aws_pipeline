@@ -3,4 +3,4 @@ deltalake>=1.2,<2
 pandas>=2.2,<3
 pyarrow>=18,<23
 streamlit>=1.45,<2
-typing_extensions>=4.13,<5
+typing_extensions==4.15.0

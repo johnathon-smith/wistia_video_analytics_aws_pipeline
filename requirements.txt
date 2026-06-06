@@ -1,0 +1,1 @@
+-r streamlit_app/requirements.txt
