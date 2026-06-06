@@ -1,246 +1,481 @@
 # Wistia Video Analytics AWS Pipeline
 
-## Glue Workflow
+[![CI/CD](https://github.com/johnathon-smith/wistia_video_analytics_aws_pipeline/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/johnathon-smith/wistia_video_analytics_aws_pipeline/actions/workflows/ci-cd.yml)
 
-Create one AWS Glue Workflow with:
+An end-to-end AWS data engineering project that incrementally extracts video
+engagement events from the Wistia Stats API, validates incoming JSON for schema
+drift, models the data as Delta Lake tables, and serves audience insights through
+an interactive Streamlit dashboard.
 
-1. A scheduled trigger that starts the Wistia ingestion job daily.
-2. A conditional trigger that starts the validation job only when the ingestion job
-   finishes with `SUCCEEDED`.
+The pipeline was designed to demonstrate production-minded engineering on a
+small, understandable workload: deterministic run lineage, idempotent upserts,
+data-quality quarantine, workflow-aware job handoffs, operational alerting,
+automated deployment, and visible data freshness.
 
-AWS Glue supplies `--WORKFLOW_NAME` and `--WORKFLOW_RUN_ID` to jobs launched by the
-workflow. The ingestion job publishes `INGESTION_MANIFEST_URI` for its run. The
-validation job reads that property, so it processes the exact manifest produced by
-the preceding ingestion job.
+## Project Highlights
 
-The ingestion job stores manifests separately from temporary ingestion data. Its
-default manifest prefix is:
+- Extracts paginated Wistia Events API data for two media assets.
+- Supports daily incremental loads and configurable historical backfills.
+- Uses a five-layer S3 data lake: ingestion, quarantine, raw, refined, and curated.
+- Detects missing, null, malformed, wrongly typed, and out-of-range fields.
+- Preserves additive schema changes while reporting them as drift.
+- Builds three refined Delta tables and one curated aggregate.
+- Uses Delta `MERGE` operations for idempotent dimension and fact upserts.
+- Passes run-specific manifest URIs through AWS Glue Workflow properties.
+- Publishes pipeline freshness metadata to the Streamlit dashboard.
+- Alerts by email for Glue failures and quarantined records, with an SQS DLQ.
+- Deploys Glue scripts through GitHub Actions using AWS OIDC.
+- Includes 61 unit tests plus Ruff linting and dashboard import checks.
 
-```text
-metadata/wistia/events/manifests
+The initial two-year backfill processed **56,153 Wistia engagement events**. The
+same pipeline now runs incrementally each day and can replay an explicit date
+range when historical recovery is needed.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A["Wistia Stats API<br/>Events endpoint"] --> B["AWS Glue<br/>Incremental ingestion"]
+    B --> C["S3 Ingestion<br/>gzip JSONL"]
+    B --> M["S3 Metadata<br/>Run manifests"]
+    C --> D["AWS Glue<br/>Schema validation"]
+    M --> D
+    D -->|Valid| E["S3 Raw<br/>gzip JSONL"]
+    D -->|Invalid| Q["S3 Quarantine<br/>gzip JSONL"]
+    D --> R["S3 Validation Reports"]
+    E --> F["AWS Glue + PySpark<br/>Delta transformations"]
+    F --> G["Refined Delta<br/>dim_media"]
+    F --> H["Refined Delta<br/>dim_visitors"]
+    F --> I["Refined Delta<br/>fact_media_engagement"]
+    I --> J["Curated Delta<br/>visitor_engagement"]
+    G --> K["Streamlit Cloud"]
+    H --> K
+    J --> K
+
+    B -. "Run properties" .-> D
+    D -. "Run properties" .-> F
+
+    L["EventBridge / S3 Events"] --> N["SNS Email Alerts"]
+    N --> O["SQS Dead-Letter Queue"]
+    B -. "Job failures" .-> L
+    D -. "Job failures / quarantine" .-> L
+    F -. "Job failures" .-> L
 ```
 
-Override it with the ingestion job parameter `--MANIFEST_PREFIX`.
+## Technology Stack
 
-### Ingestion date parameters
+| Area | Technology |
+|---|---|
+| Source | Wistia Stats API, Events endpoint, version `2026-03` |
+| Compute | AWS Glue, Python, PySpark |
+| Storage | Amazon S3, gzip JSONL, Delta Lake |
+| Orchestration | AWS Glue Workflows and conditional triggers |
+| Data quality | Python validation, manifests, quarantine routing |
+| Dashboard | Streamlit Cloud, pandas, Altair, delta-rs |
+| Observability | CloudWatch Logs, EventBridge, S3 events, SNS, SQS |
+| Security | IAM, AWS Secrets Manager, GitHub Actions OIDC |
+| CI/CD | GitHub Actions, Ruff, `unittest`, AWS CLI |
 
-Scheduled ingestion runs default to the latest fully completed UTC day. For
-example, a run on June 6 processes June 5:
+## Data Lake Design
+
+| Layer | Purpose | Format |
+|---|---|---|
+| Ingestion | Landing zone for newly extracted API payloads before validation | gzip JSONL |
+| Quarantine | Records that fail schema or value validation | gzip JSONL |
+| Raw | Validated, append-only source history | gzip JSONL |
+| Refined | Deduplicated dimensional and event-level models | Delta Lake |
+| Curated | Dashboard-ready visitor and media aggregates | Delta Lake |
+| Metadata | Ingestion manifests and validation reports | JSON |
+
+Run manifests live outside the temporary ingestion prefix at:
 
 ```text
-start_date=2026-06-05
-end_date=2026-06-05
+s3://<data-lake-bucket>/metadata/wistia/events/manifests/
 ```
 
-No date parameters are needed on the Glue workflow job for this daily behavior.
-For a manual backfill or rerun, supply both optional parameters:
+Each manifest records the API version, extraction window, run ID, source objects,
+media-level counts, and total event count. Downstream jobs use the manifest instead
+of guessing which S3 object belongs to the current run.
+
+## Data Models
+
+### `dim_media`
+
+**Grain:** one row per `media_id`
+
+**Write strategy:** Delta upsert keyed by `media_id`
+
+| Column | Source or rule |
+|---|---|
+| `media_id` | Wistia `media_id` |
+| `title` | `media_name` |
+| `url` | `media_url` |
+| `channel` | Derived from `Youtube` or `Facebook` in the title |
+
+When duplicate media records occur within a load, the most recently received
+event supplies the current attributes.
+
+### `dim_visitors`
+
+**Grain:** one row per `visitor_id`
+
+**Write strategy:** Delta upsert keyed by `visitor_id`
+
+| Column | Source or rule |
+|---|---|
+| `visitor_id` | `visitor_key` |
+| `ip_address` | `ip` |
+| `country` | `country` |
+
+The latest `received_at` value determines the visitor's current IP address and
+country.
+
+### `fact_media_engagement`
+
+**Grain:** one row per Wistia event
+
+**Write strategy:** Delta upsert keyed by `event_id`
+
+| Column | Source or rule |
+|---|---|
+| `event_id` | `event_key` |
+| `visitor_id` | `visitor_key` |
+| `media_id` | Wistia `media_id` |
+| `date` | UTC date derived from `received_at` |
+| `watched_percent` | Wistia `percent_viewed`, retained on its `0-1` scale |
+
+The fact table is intentionally unpartitioned at the current volume. Partitioning
+by media, year, and month would create small files and unnecessary maintenance for
+only two media IDs. A later migration can rewrite the table to a new location with
+derived year and month columns when data volume justifies it.
+
+### `visitor_engagement`
+
+**Grain:** one row per unique `visitor_id` and `media_id` combination
+
+**Write strategy:** complete recomputation from the refined fact table
+
+| Column | Definition |
+|---|---|
+| `visitor_id` | Visitor identifier |
+| `media_id` | Media identifier |
+| `total_views` | Count of engagement events |
+| `avg_pct_viewed` | Average `watched_percent` |
+| `max_pct_viewed` | Maximum `watched_percent` |
+| `first_date_watched` | Earliest event date |
+| `last_date_watched` | Latest event date |
+| `data_through_date` | Latest Wistia date processed successfully |
+| `pipeline_refreshed_at` | UTC timestamp of the curated rebuild |
+| `ingestion_run_id` | Ingestion run that initiated the refresh |
+
+The curated table is fully recomputed because it is a compact aggregate and the
+fact table is the source of truth. This prevents stale aggregates if historical
+events are corrected or reprocessed.
+
+## Pipeline Flow
+
+### 1. Incremental API ingestion
+
+[`ingest_wistia_events.py`](glue_jobs/ingest_wistia_events.py) retrieves every
+page for each configured media ID and streams the results into gzip-compressed
+JSON Lines files.
+
+Scheduled runs default to yesterday in UTC, the latest fully completed day:
+
+```text
+START_DATE = yesterday UTC
+END_DATE   = yesterday UTC
+```
+
+Manual backfills can override the window:
 
 ```text
 --START_DATE 2026-05-01
 --END_DATE 2026-05-31
 ```
 
-Dates use `YYYY-MM-DD`. Both parameters must be supplied together, and
-`START_DATE` cannot be later than `END_DATE`. The selected dates are recorded in
-the S3 object metadata and ingestion manifest.
+Both dates must be supplied together in `YYYY-MM-DD` format. Requests use bounded
+timeouts, exponential backoff with jitter, `Retry-After` handling, and explicit
+failure messages for HTTP and response-shape errors.
 
-For a manual validation run outside the workflow, provide:
+### 2. Schema validation and quarantine
 
-```text
---INPUT_MANIFEST_URI s3://bucket/path/to/manifest.json
-```
-
-### Validation job parameters
-
-The validation job requires only the Glue-provided `--JOB_NAME`. These optional
-parameters override its default output prefixes:
+[`validate_wistia_events.py`](glue_jobs/validate_wistia_events.py) processes the
+exact manifest published by ingestion. It requires and type-checks:
 
 ```text
---RAW_PREFIX raw/wistia/events
---QUARANTINE_PREFIX quarantine/wistia/events
---REPORT_PREFIX validation_reports/wistia/events
+event_key
+received_at
+visitor_key
+media_id
+media_name
+media_url
+percent_viewed
+ip
+country
 ```
 
-The validation job creates a quarantine S3 object only when one or more records
-fail validation. For a clean run, the report contains a quarantine count of `0`
-and `quarantine_s3_uri` is `null`, allowing S3 object-created notifications under
-the quarantine prefix to represent actual data-quality problems.
+Invalid JSON and records with missing, null, incorrectly typed, or out-of-range
+values are written to quarantine. Unknown fields are allowed so additive API
+changes do not stop the pipeline, but they are counted and reported as additive
+schema drift.
 
-### IAM permissions
+A quarantine object is created only when invalid records exist. This makes an S3
+object-created notification under the quarantine prefix a meaningful data-quality
+alert rather than routine noise.
 
-The shared Glue execution role needs access to the data-lake objects and these Glue
-workflow actions:
+### 3. Refined Delta models
+
+The three PySpark jobs read the validated raw object identified by the validation
+report:
+
+- [`build_dim_media.py`](glue_jobs/build_dim_media.py)
+- [`build_dim_visitors.py`](glue_jobs/build_dim_visitors.py)
+- [`build_fact_media_engagement.py`](glue_jobs/build_fact_media_engagement.py)
+
+Each job validates its inputs, deduplicates the current batch, and uses Delta
+`MERGE` semantics so rerunning the same ingestion does not create duplicate rows.
+
+### 4. Curated aggregation
+
+[`build_visitor_engagement.py`](glue_jobs/build_visitor_engagement.py) rebuilds
+the visitor-media aggregate from the complete fact table and atomically overwrites
+the curated Delta table with schema evolution enabled.
+
+### 5. Streamlit analytics
+
+[`streamlit_app/app.py`](streamlit_app/app.py) reads Delta tables directly from S3
+with delta-rs. The dashboard provides:
+
+- Media, channel, country, and watch-date filters.
+- Unique visitors, total views, average completion, and high-intent viewer KPIs.
+- Views by media and top-country visualizations.
+- Audience-quality distribution bands.
+- Top-visitor analysis and downloadable visitor-media detail.
+- A visible `Data through` date and pipeline refresh timestamp.
+- A 15-minute data cache plus manual refresh control.
+
+## Workflow Orchestration
+
+The jobs support both manual execution and AWS Glue Workflow execution. Workflow
+runs receive `--WORKFLOW_NAME` and `--WORKFLOW_RUN_ID` automatically.
+
+The ingestion job publishes:
 
 ```text
-glue:GetWorkflowRunProperties
-glue:PutWorkflowRunProperties
-s3:GetObject
-s3:PutObject
+INGESTION_MANIFEST_URI
+INGESTION_RUN_ID
+INGESTION_START_DATE
+INGESTION_END_DATE
 ```
 
-The ingestion job also needs `secretsmanager:GetSecretValue` and any applicable
-KMS permissions.
+Validation consumes the manifest and publishes its report URI and record counts.
+Refined jobs consume the validation report. The curated job verifies that the fact
+table was updated by the same ingestion run before rebuilding the aggregate.
 
-## Refined dim_media
-
-`build_dim_media.py` reads the validated raw object for one ingestion run and
-upserts a Delta table at:
+Recommended trigger sequence:
 
 ```text
-s3://<data-lake-bucket>/refined/dim_media
+Scheduled ingestion
+    -> validation after ingestion SUCCEEDED
+    -> refined jobs after validation SUCCEEDED
+    -> curated job after fact_media_engagement SUCCEEDED
 ```
 
-The table contains `media_id`, `title`, `url`, and `channel`. Channel is derived
-case-insensitively from `Youtube` or `Facebook` in the Wistia media title.
+This run-property contract prevents a downstream job from accidentally processing
+an older S3 object or mixing artifacts from different workflow executions.
 
-Workflow runs read `INGESTION_RUN_ID` and `VALIDATION_REPORT_URI` from workflow
-properties. For a manual run, supply both:
+## Observability
+
+The production environment uses console-configured AWS services:
+
+- CloudWatch Logs for Glue execution logs.
+- EventBridge rules for Glue `FAILED`, `TIMEOUT`, and `STOPPED` states.
+- SNS email notifications for job failures.
+- S3 event notifications for objects created under
+  `quarantine/wistia/events/`.
+- An SQS dead-letter queue for failed alert delivery.
+- Validation reports containing valid, quarantined, malformed, and drift counts.
+
+The dashboard's freshness indicator is based on the successful ingestion window,
+not the latest viewer event. This distinction matters because a fully processed day
+can legitimately contain no video activity.
+
+## Engineering Challenges
+
+| Challenge | Resolution |
+|---|---|
+| Paginated two-year historical extraction | Iterated through every API page per media ID while streaming gzip JSONL to temporary storage to control memory use. |
+| Daily loads initially repeated full history | Added optional start/end parameters and defaulted scheduled runs to the latest completed UTC day. |
+| Passing the correct object between Glue jobs | Published the exact manifest URI and run ID through Glue Workflow run properties. |
+| Detecting schema drift without blocking additive changes | Enforced required fields and value rules while recording unknown fields as non-breaking additive drift. |
+| False quarantine alerts from empty output files | Deferred the S3 upload and created a quarantine object only when at least one record failed. |
+| Preventing duplicate facts during reruns | Deduplicated by `event_id` and used a Delta upsert keyed on the same identifier. |
+| Choosing a partition strategy too early | Kept the small fact table unpartitioned to avoid tiny files and documented a future migration path. |
+| Showing trustworthy dashboard freshness | Carried the ingestion end date and run ID into the curated model instead of inferring freshness from viewing activity. |
+| Streamlit Cloud Altair import failure | Diagnosed a Python 3.14 and Altair 5.5 `TypedDict` incompatibility and upgraded to Altair 6.1. |
+| CI missing dashboard dependencies | Installed the Streamlit requirements in the development dependency chain and added a dashboard import smoke test. |
+| Secure AWS deployment from GitHub | Used GitHub Actions OIDC role assumption instead of long-lived AWS access keys. |
+
+## Reliability and Idempotency
+
+- Every ingestion receives a unique run ID.
+- Manifests and validation reports preserve run-level lineage.
+- API retries are limited and applied only to transient failures.
+- Validation routes bad records instead of silently discarding them.
+- Dimension and fact tables use deterministic merge keys.
+- Curated output is rebuilt from the authoritative fact table.
+- Workflow jobs verify matching ingestion run IDs.
+- Manual parameters override workflow properties for controlled backfills.
+- Secrets are read from AWS Secrets Manager and never stored in source code.
+
+## Repository Structure
 
 ```text
---INGESTION_RUN_ID <ingestion-run-id>
---VALIDATION_REPORT_URI s3://<bucket>/validation_reports/wistia/events/.../report.json
+.
+|-- .github/workflows/ci-cd.yml
+|-- glue_jobs/
+|   |-- ingest_wistia_events.py
+|   |-- validate_wistia_events.py
+|   |-- build_dim_media.py
+|   |-- build_dim_visitors.py
+|   |-- build_fact_media_engagement.py
+|   `-- build_visitor_engagement.py
+|-- streamlit_app/
+|   |-- .streamlit/
+|   |   |-- config.toml
+|   |   `-- secrets.toml.example
+|   |-- app.py
+|   |-- data_access.py
+|   |-- demo_data.py
+|   `-- requirements.txt
+|-- tests/
+|-- pyproject.toml
+`-- requirements-dev.txt
 ```
 
-Configure this as a Spark Glue job with Delta enabled:
+## AWS Setup
+
+### Glue job requirements
+
+The ingestion and validation scripts run as Python Glue jobs. The refined and
+curated jobs require Glue Spark with Delta enabled:
 
 ```text
 --datalake-formats delta
 --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
 ```
 
-The job does not register the Delta table in the Glue Data Catalog.
-
-The execution role needs `s3:GetObject` for the validation report and raw object,
-plus `s3:ListBucket` and `s3:PutObject` for the Delta table location. Include
-`s3:DeleteObject` if later maintenance or vacuum operations will remove Delta files.
-
-## Refined dim_visitors
-
-`build_dim_visitors.py` follows the same workflow/manual input contract and Delta
-configuration as `build_dim_media.py`. It upserts on `visitor_id` at:
+Core ingestion parameters:
 
 ```text
-s3://<data-lake-bucket>/refined/dim_visitors
+--SECRET_ID <secrets-manager-secret>
+--S3_BUCKET <data-lake-bucket>
+--MEDIA_IDS gskhw4w4lm,v08dlrgr7v
+--S3_PREFIX ingestion/wistia/events
+--MANIFEST_PREFIX metadata/wistia/events/manifests
 ```
 
-The table contains:
+Do not add blank `--START_DATE` or `--END_DATE` arguments to the scheduled job.
+Omit both to use the automatic daily window.
+
+### IAM permissions
+
+Scope permissions to the required bucket prefixes and resources. Depending on the
+job, the shared Glue role requires:
 
 ```text
-visitor_id   <- visitor_key
-ip_address   <- ip
-country
-```
-
-When a visitor appears multiple times, the event with the latest `received_at`
-supplies the current IP address and country. Manual runs require
-`--INGESTION_RUN_ID` and `--VALIDATION_REPORT_URI`.
-
-## Refined fact_media_engagement
-
-`build_fact_media_engagement.py` creates an unpartitioned Delta table at:
-
-```text
-s3://<data-lake-bucket>/refined/fact_media_engagement
-```
-
-The table contains:
-
-```text
-event_id          <- event_key
-visitor_id        <- visitor_key
-media_id
-date              <- UTC date from received_at
-watched_percent   <- percent_viewed
-```
-
-The job keeps one row per `event_id` and performs a Delta upsert on that key.
-`watched_percent` remains Wistia's decimal value, such as `0.75`. The table is
-currently unpartitioned to avoid tiny partitions at the present data volume.
-
-Workflow and manual parameters, Delta configuration, and IAM requirements match
-the other refined jobs. To partition later, rewrite the existing Delta table to a
-new location with derived `event_year` and `event_month` columns and validate it
-before switching consumers to the new path.
-
-## Curated visitor_engagement
-
-`build_visitor_engagement.py` reads the complete refined
-`fact_media_engagement` Delta table and rebuilds an unpartitioned curated Delta
-table at:
-
-```text
-s3://<data-lake-bucket>/curated/visitor_engagement
-```
-
-It produces one row per `visitor_id` and `media_id` with:
-
-```text
-visitor_id
-media_id
-total_views
-avg_pct_viewed
-max_pct_viewed
-first_date_watched
-last_date_watched
-```
-
-The aggregate is fully recomputed and atomically overwritten each run so
-corrections to the refined fact table cannot leave stale groups behind. Workflow
-runs consume `FACT_MEDIA_ENGAGEMENT_TABLE_URI` and verify it was produced for the
-current ingestion run.
-
-The curated table also stores `data_through_date`, `pipeline_refreshed_at`, and
-`ingestion_run_id` on each row. The Streamlit dashboard uses these audit fields
-to display the latest successfully processed Wistia date. This is more reliable
-than using `last_date_watched`, because a successfully processed day may contain
-no viewing activity.
-
-For a manual run, supply:
-
-```text
---INGESTION_RUN_ID <ingestion-run-id>
---FACT_MEDIA_ENGAGEMENT_TABLE_URI s3://<bucket>/refined/fact_media_engagement
---DATA_THROUGH_DATE 2026-06-05
-```
-
-`--DATA_THROUGH_DATE` is optional for manual runs but recommended so the
-dashboard can report freshness. Workflow runs receive the date automatically
-from the ingestion job.
-
-Use the same Delta Spark configuration and IAM permissions as the refined jobs.
-
-## Streamlit dashboard
-
-The dashboard entrypoint is `streamlit_app/app.py`. It reads the curated Delta
-table directly from S3 with `delta-rs` and optionally enriches it with `dim_media`
-and `dim_visitors`.
-
-For local development:
-
-```text
-pip install -r streamlit_app/requirements.txt
-streamlit run streamlit_app/app.py
-```
-
-Create `streamlit_app/.streamlit/secrets.toml` from
-`secrets.toml.example`. Never commit the real secrets file. In Streamlit
-Community Cloud, use `streamlit_app/app.py` as the entrypoint and paste the same
-TOML into the app's Secrets settings.
-
-The AWS identity only needs read access:
-
-```text
-s3:ListBucket
+glue:GetWorkflowRunProperties
+glue:PutWorkflowRunProperties
 s3:GetObject
+s3:PutObject
+s3:ListBucket
+secretsmanager:GetSecretValue
 ```
 
-Scope those permissions to the three Delta table prefixes. The dashboard caches
-data for 15 minutes and includes a manual refresh button.
+Add `s3:DeleteObject` for Delta maintenance operations that remove files, and KMS
+permissions when customer-managed keys are used.
 
-For a local UI preview using synthetic records instead of AWS data:
+### Streamlit secrets
 
-```text
+Copy the structure from
+[`secrets.toml.example`](streamlit_app/.streamlit/secrets.toml.example):
+
+```toml
+[aws]
+region = "us-east-1"
+access_key_id = "REPLACE_ME"
+secret_access_key = "REPLACE_ME"
+# session_token = "REPLACE_ME"
+
+[tables]
+visitor_engagement_uri = "s3://your-data-lake/curated/visitor_engagement"
+dim_media_uri = "s3://your-data-lake/refined/dim_media"
+dim_visitors_uri = "s3://your-data-lake/refined/dim_visitors"
+```
+
+The Streamlit identity needs read-only `s3:ListBucket` and `s3:GetObject`
+permissions scoped to the Delta table prefixes.
+
+## Local Development
+
+Install dependencies and run the test suite:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m ruff check glue_jobs streamlit_app tests
+python -m unittest discover -s tests -v
+```
+
+Run the dashboard with synthetic data:
+
+```bash
 WISTIA_DASHBOARD_DEMO_MODE=true streamlit run streamlit_app/app.py
 ```
 
-Do not set that environment variable in the production Streamlit app.
+On Windows PowerShell:
+
+```powershell
+$env:WISTIA_DASHBOARD_DEMO_MODE = "true"
+streamlit run streamlit_app/app.py
+```
+
+## CI/CD
+
+The GitHub Actions workflow:
+
+1. Installs Python and all development/dashboard dependencies.
+2. Runs Ruff against Glue jobs, Streamlit code, and tests.
+3. Verifies that Altair, Delta Lake, pandas, and Streamlit import successfully.
+4. Runs all unit tests.
+5. Assumes an AWS IAM role through GitHub OIDC.
+6. Synchronizes Glue scripts to the configured S3 script prefix after successful
+   validation on `main`.
+
+No long-lived AWS credentials are stored in GitHub.
+
+## Future Enhancements
+
+- Add infrastructure as code after the console-built AWS design stabilizes.
+- Add automated end-to-end tests against a non-production AWS environment.
+- Monitor freshness thresholds and DLQ depth with CloudWatch alarms.
+- Compact and optimize Delta files as data volume grows.
+- Partition the fact table only after query patterns and volume justify it.
+- Replace static Streamlit credentials with short-lived or brokered access.
+- Add more media assets and parameterize channel classification rules.
+
+## What This Project Demonstrates
+
+This project showcases practical experience with:
+
+- Designing layered data lakes and dimensional models.
+- Building resilient REST API ingestion with pagination and retries.
+- Implementing schema validation, quarantine, and drift monitoring.
+- Writing idempotent PySpark and Delta Lake transformations.
+- Orchestrating dependent jobs with AWS Glue Workflows.
+- Managing lineage and freshness across distributed pipeline stages.
+- Building and deploying interactive analytics applications.
+- Applying least-privilege IAM, secrets management, observability, and CI/CD.
+
+The result is a compact but complete production-style analytics system: source to
+dashboard, with the reliability and operational controls needed to trust the data.
