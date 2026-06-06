@@ -50,7 +50,7 @@ jobs:
 
       - name: Run Ruff checks
         run: |
-          ruff check glue_jobs tests
+          ruff check glue_jobs streamlit_app tests
 
       - name: Run unit tests
         run: |

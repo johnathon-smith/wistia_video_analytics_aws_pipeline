@@ -1,3 +1,4 @@
+-r streamlit_app/requirements.txt
 boto3
 requests
 ruff
