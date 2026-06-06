@@ -8,6 +8,8 @@ import pandas as pd
 
 
 def load_demo_data() -> tuple[pd.DataFrame, dict[str, object]]:
+    """Create realistic synthetic dashboard data without connecting to AWS."""
+
     rows: list[dict[str, object]] = []
     media = [
         (

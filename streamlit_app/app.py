@@ -27,6 +27,8 @@ MUTED = "#64748B"
 
 
 def inject_styles() -> None:
+    """Apply the dashboard's colors, spacing, cards, and sidebar styling."""
+
     st.markdown(
         """
         <style>
@@ -85,10 +87,14 @@ def inject_styles() -> None:
 
 
 def format_percent(value: float) -> str:
+    """Display a decimal fraction as a one-decimal-place percentage."""
+
     return f"{value:.1%}"
 
 
 def format_integer(value: int | float) -> str:
+    """Display a numeric KPI as a comma-separated whole number."""
+
     return f"{int(value):,}"
 
 
@@ -99,6 +105,8 @@ def apply_filters(
     countries: list[str],
     date_range: tuple[date, date],
 ) -> pd.DataFrame:
+    """Apply all sidebar selections to the enriched engagement data."""
+
     filtered = frame[
         frame["media_id"].isin(media_ids)
         & frame["channel"].isin(channels)
@@ -112,12 +120,15 @@ def apply_filters(
 
 
 def render_empty_state() -> None:
+    """Explain that filters returned no rows and stop the current render."""
+
     st.warning("No engagement records match the selected filters.")
     st.stop()
 
 
 inject_styles()
 
+# Load either safe demo data or the production Delta tables.
 demo_mode = os.environ.get("WISTIA_DASHBOARD_DEMO_MODE", "").lower() == "true"
 if not demo_mode:
     try:
@@ -150,6 +161,8 @@ if engagement.empty:
     st.info("The curated visitor_engagement table is empty.")
     st.stop()
 
+# Build filter choices from the data so new media and countries appear
+# automatically without requiring dashboard code changes.
 all_media = sorted(engagement["media_id"].dropna().unique().tolist())
 all_channels = sorted(engagement["channel"].dropna().unique().tolist())
 all_countries = sorted(engagement["country"].dropna().unique().tolist())
@@ -195,6 +208,7 @@ filtered = apply_filters(
 if filtered.empty:
     render_empty_state()
 
+# Render the page header and trustworthy pipeline freshness metadata.
 st.markdown(
     """
     <div class="hero">
@@ -231,6 +245,7 @@ high_intent_visitors = filtered.loc[
     filtered["max_pct_viewed"] >= 0.75, "visitor_id"
 ].nunique()
 
+# Summarize the filtered audience before showing detailed charts.
 kpi_columns = st.columns(4)
 kpi_columns[0].metric("Unique visitors", format_integer(unique_visitors))
 kpi_columns[1].metric("Total views", format_integer(total_views))
@@ -240,6 +255,8 @@ kpi_columns[3].metric("75%+ viewers", format_integer(high_intent_visitors))
 st.markdown('<div class="section-label">Performance overview</div>', unsafe_allow_html=True)
 left, right = st.columns((1.4, 1), gap="large")
 
+# The curated table is grouped by visitor and media. Reaggregate it here to
+# produce media-level views, visitors, and a view-weighted completion rate.
 media_summary = (
     filtered.groupby(["media_id", "title", "channel"], as_index=False)
     .agg(
@@ -311,6 +328,8 @@ st.markdown('<div class="section-label">Audience quality</div>', unsafe_allow_ht
 left, right = st.columns((1, 1.25), gap="large")
 
 with left:
+    # Place each visitor-media pair into a completion band for a quick audience
+    # quality overview.
     engagement_bands = pd.cut(
         filtered["avg_pct_viewed"],
         bins=[-0.001, 0.25, 0.5, 0.75, 1.0],
@@ -348,6 +367,7 @@ with left:
     st.altair_chart(band_chart, use_container_width=True)
 
 with right:
+    # Rank visitors by total views, using maximum completion as a tie-breaker.
     top_visitors = (
         filtered.groupby(["visitor_id", "country"], as_index=False)
         .agg(

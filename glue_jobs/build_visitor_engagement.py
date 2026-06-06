@@ -45,6 +45,8 @@ class VisitorEngagementError(RuntimeError):
 
 @dataclass(frozen=True)
 class JobConfig:
+    """Job arguments that control fact input and curated Delta output."""
+
     job_name: str
     ingestion_run_id: str | None
     fact_media_engagement_table_uri: str | None
@@ -57,12 +59,16 @@ class JobConfig:
 
 @dataclass(frozen=True)
 class RunInput:
+    """The fact table, run ID, and freshness date selected for this execution."""
+
     ingestion_run_id: str
     fact_media_engagement_table_uri: str
     data_through_date: date | None = None
 
 
 def configure_logging() -> None:
+    """Send consistently formatted job messages to CloudWatch Logs."""
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -71,6 +77,8 @@ def configure_logging() -> None:
 
 
 def parse_optional_argument(name: str, default: str | None = None) -> str | None:
+    """Read an optional --NAME value from the Glue job command line."""
+
     flag = f"--{name}"
     if flag not in sys.argv:
         return default
@@ -81,6 +89,8 @@ def parse_optional_argument(name: str, default: str | None = None) -> str | None
 
 
 def load_config() -> JobConfig:
+    """Parse Glue arguments once and return a typed configuration object."""
+
     required = getResolvedOptions(sys.argv, ["JOB_NAME"])
     curated_prefix = parse_optional_argument(
         "CURATED_PREFIX", "curated/visitor_engagement"
@@ -103,6 +113,8 @@ def load_config() -> JobConfig:
 
 
 def workflow_context(config: JobConfig) -> tuple[str, str] | None:
+    """Return complete workflow identifiers or fail on a partial configuration."""
+
     if not config.workflow_name and not config.workflow_run_id:
         return None
     if not config.workflow_name or not config.workflow_run_id:
@@ -113,6 +125,8 @@ def workflow_context(config: JobConfig) -> tuple[str, str] | None:
 
 
 def parse_s3_uri(uri: str) -> tuple[str, str]:
+    """Split an S3 URI into bucket and key, rejecting malformed locations."""
+
     parsed = urlparse(uri)
     if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
         raise VisitorEngagementError(f"Invalid S3 URI: {uri!r}.")
@@ -120,6 +134,8 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def parse_data_through_date(value: str | None) -> date | None:
+    """Parse optional freshness metadata used by the dashboard."""
+
     if value is None:
         return None
     try:
@@ -131,6 +147,8 @@ def parse_data_through_date(value: str | None) -> date | None:
 
 
 def resolve_run_input(glue_client: Any, config: JobConfig) -> RunInput:
+    """Choose manual fact inputs or resolve matching inputs from the workflow."""
+
     if config.ingestion_run_id or config.fact_media_engagement_table_uri:
         if not config.ingestion_run_id or not config.fact_media_engagement_table_uri:
             raise VisitorEngagementError(
@@ -189,6 +207,8 @@ def resolve_run_input(glue_client: Any, config: JobConfig) -> RunInput:
 
 
 def resolve_table_uri(run_input: RunInput, config: JobConfig) -> str:
+    """Use an explicit curated location or infer one in the fact-table bucket."""
+
     if config.visitor_engagement_table_uri:
         parse_s3_uri(config.visitor_engagement_table_uri)
         return config.visitor_engagement_table_uri.rstrip("/")
@@ -201,6 +221,8 @@ def build_aggregate_dataframe(
     run_input: RunInput,
     refreshed_at: datetime,
 ) -> Any:
+    """Aggregate the full fact table to one row per visitor and media pair."""
+
     from pyspark.sql import functions as functions
 
     fact = spark.read.format("delta").load(
@@ -219,6 +241,8 @@ def build_aggregate_dataframe(
             f"Fact table is missing required columns: {', '.join(missing_columns)}."
         )
 
+    # Recompute from the complete fact table so corrections to historical facts
+    # cannot leave stale totals or dates in the curated layer.
     aggregate = (
         fact.groupBy("visitor_id", "media_id")
         .agg(
@@ -255,6 +279,8 @@ def build_aggregate_dataframe(
 
 
 def write_delta_table(aggregate: Any, table_uri: str) -> int:
+    """Atomically replace the compact curated table and allow schema evolution."""
+
     row_count = aggregate.count()
     (
         aggregate.write.format("delta")
@@ -272,6 +298,8 @@ def publish_workflow_properties(
     table_uri: str,
     row_count: int,
 ) -> None:
+    """Publish the curated table URI and row count for operational visibility."""
+
     context = workflow_context(config)
     if context is None:
         LOGGER.info(
@@ -299,6 +327,8 @@ def publish_workflow_properties(
 
 
 def main() -> None:
+    """Resolve the fact table, rebuild visitor_engagement, and publish results."""
+
     from awsglue.context import GlueContext
     from awsglue.job import Job
     from pyspark.context import SparkContext

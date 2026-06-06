@@ -44,6 +44,8 @@ class DimVisitorsError(RuntimeError):
 
 @dataclass(frozen=True)
 class JobConfig:
+    """Job arguments that control input resolution and Delta output."""
+
     job_name: str
     ingestion_run_id: str | None
     validation_report_uri: str | None
@@ -55,11 +57,15 @@ class JobConfig:
 
 @dataclass(frozen=True)
 class RunInput:
+    """The ingestion run and validation report selected for this execution."""
+
     ingestion_run_id: str
     validation_report_uri: str
 
 
 def configure_logging() -> None:
+    """Send consistently formatted job messages to CloudWatch Logs."""
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -68,6 +74,8 @@ def configure_logging() -> None:
 
 
 def parse_optional_argument(name: str, default: str | None = None) -> str | None:
+    """Read an optional --NAME value from the Glue job command line."""
+
     flag = f"--{name}"
     if flag not in sys.argv:
         return default
@@ -78,6 +86,8 @@ def parse_optional_argument(name: str, default: str | None = None) -> str | None
 
 
 def load_config() -> JobConfig:
+    """Parse Glue arguments once and return a typed configuration object."""
+
     required = getResolvedOptions(sys.argv, ["JOB_NAME"])
     refined_prefix = parse_optional_argument("REFINED_PREFIX", "refined/dim_visitors")
     assert refined_prefix is not None
@@ -93,6 +103,8 @@ def load_config() -> JobConfig:
 
 
 def workflow_context(config: JobConfig) -> tuple[str, str] | None:
+    """Return complete workflow identifiers or fail on a partial configuration."""
+
     if not config.workflow_name and not config.workflow_run_id:
         return None
     if not config.workflow_name or not config.workflow_run_id:
@@ -101,6 +113,8 @@ def workflow_context(config: JobConfig) -> tuple[str, str] | None:
 
 
 def resolve_run_input(glue_client: Any, config: JobConfig) -> RunInput:
+    """Choose manual inputs first, otherwise read this workflow run's inputs."""
+
     if config.ingestion_run_id or config.validation_report_uri:
         if not config.ingestion_run_id or not config.validation_report_uri:
             raise DimVisitorsError(
@@ -144,6 +158,8 @@ def resolve_run_input(glue_client: Any, config: JobConfig) -> RunInput:
 
 
 def parse_s3_uri(uri: str) -> tuple[str, str]:
+    """Split an S3 URI into bucket and key, rejecting malformed locations."""
+
     parsed = urlparse(uri)
     if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
         raise DimVisitorsError(f"Invalid S3 URI: {uri!r}.")
@@ -151,6 +167,8 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def read_validation_report(s3_client: Any, uri: str) -> dict[str, Any]:
+    """Download and parse the validation report that points to valid raw data."""
+
     bucket, key = parse_s3_uri(uri)
     try:
         body = s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
@@ -166,6 +184,8 @@ def resolve_raw_input(
     report: dict[str, Any],
     expected_ingestion_run_id: str,
 ) -> str:
+    """Verify report lineage and return the validated raw object URI."""
+
     report_run_id = report.get("ingestion_run_id")
     if report_run_id != expected_ingestion_run_id:
         raise DimVisitorsError(
@@ -180,6 +200,8 @@ def resolve_raw_input(
 
 
 def valid_record_count(report: dict[str, Any]) -> int:
+    """Read the report's valid count as a non-negative integer."""
+
     count = report.get("valid_record_count")
     if type(count) is not int or count < 0:
         raise DimVisitorsError("Validation report has an invalid valid_record_count.")
@@ -187,6 +209,8 @@ def valid_record_count(report: dict[str, Any]) -> int:
 
 
 def resolve_table_uri(raw_input_uri: str, config: JobConfig) -> str:
+    """Use an explicit Delta location or infer one in the raw bucket."""
+
     if config.dim_visitors_table_uri:
         parse_s3_uri(config.dim_visitors_table_uri)
         return config.dim_visitors_table_uri.rstrip("/")
@@ -195,6 +219,8 @@ def resolve_table_uri(raw_input_uri: str, config: JobConfig) -> str:
 
 
 def build_dimension_dataframe(spark: Any, raw_input_uri: str) -> Any:
+    """Create one latest visitor record per visitor ID from raw events."""
+
     from pyspark.sql import Window
     from pyspark.sql import functions as functions
 
@@ -212,6 +238,8 @@ def build_dimension_dataframe(spark: Any, raw_input_uri: str) -> Any:
         functions.col("country"),
         functions.to_timestamp("received_at").alias("_received_at"),
     )
+    # A visitor may have many events. The newest event supplies the current
+    # IP address and country stored in the dimension.
     latest_per_visitor = Window.partitionBy("visitor_id").orderBy(
         functions.col("_received_at").desc(),
         functions.col("ip_address").desc(),
@@ -228,6 +256,8 @@ def build_dimension_dataframe(spark: Any, raw_input_uri: str) -> Any:
 
 
 def upsert_delta_table(spark: Any, dimension: Any, table_uri: str) -> int:
+    """Insert new visitors and update existing visitors in the Delta table."""
+
     from delta.tables import DeltaTable
 
     row_count = dimension.count()
@@ -259,6 +289,8 @@ def publish_workflow_properties(
     table_uri: str,
     row_count: int,
 ) -> None:
+    """Publish the table URI and row count for later workflow jobs."""
+
     context = workflow_context(config)
     if context is None:
         LOGGER.info(
@@ -285,6 +317,8 @@ def publish_workflow_properties(
 
 
 def main() -> None:
+    """Resolve validated input, build dim_visitors, and upsert it into Delta."""
+
     from awsglue.context import GlueContext
     from awsglue.job import Job
     from pyspark.context import SparkContext

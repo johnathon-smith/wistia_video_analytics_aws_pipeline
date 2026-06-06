@@ -63,6 +63,8 @@ class WistiaIngestionError(RuntimeError):
 
 @dataclass(frozen=True)
 class JobConfig:
+    """All settings the ingestion job needs after parsing Glue arguments."""
+
     job_name: str
     secret_id: str
     secret_region: str | None
@@ -77,6 +79,8 @@ class JobConfig:
 
 
 def configure_logging() -> None:
+    """Send consistently formatted job messages to CloudWatch Logs."""
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -85,6 +89,8 @@ def configure_logging() -> None:
 
 
 def parse_optional_argument(name: str, default: str | None = None) -> str | None:
+    """Read an optional --NAME value from the Glue job command line."""
+
     flag = f"--{name}"
     if flag not in sys.argv:
         return default
@@ -96,6 +102,8 @@ def parse_optional_argument(name: str, default: str | None = None) -> str | None
 
 
 def parse_media_ids(value: str) -> tuple[str, ...]:
+    """Accept media IDs as CSV or JSON and return unique, non-empty IDs."""
+
     try:
         parsed = json.loads(value)
     except json.JSONDecodeError:
@@ -113,6 +121,8 @@ def parse_media_ids(value: str) -> tuple[str, ...]:
 
 
 def load_config() -> JobConfig:
+    """Combine required Glue arguments and optional overrides into one object."""
+
     required = getResolvedOptions(
         sys.argv,
         ["JOB_NAME", "SECRET_ID", "S3_BUCKET", "MEDIA_IDS"],
@@ -140,6 +150,8 @@ def load_config() -> JobConfig:
 
 
 def parse_date_argument(name: str, value: str) -> date:
+    """Parse one YYYY-MM-DD job argument and provide a useful error if invalid."""
+
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
@@ -153,6 +165,8 @@ def resolve_date_window(
     start_date_override: str | None,
     end_date_override: str | None,
 ) -> tuple[date, date]:
+    """Choose a manual date range or default to the last completed UTC day."""
+
     if not start_date_override and not end_date_override:
         latest_completed_date = run_date - timedelta(days=1)
         return latest_completed_date, latest_completed_date
@@ -172,6 +186,8 @@ def resolve_date_window(
 
 
 def get_api_token(secret_id: str, region_name: str | None) -> str:
+    """Load the Wistia API token from AWS Secrets Manager."""
+
     client = boto3.client("secretsmanager", region_name=region_name)
     try:
         response = client.get_secret_value(SecretId=secret_id)
@@ -210,6 +226,8 @@ def get_api_token(secret_id: str, region_name: str | None) -> str:
 
 
 def build_session(api_token: str) -> requests.Session:
+    """Create a reusable HTTP session with Wistia authentication and headers."""
+
     session = requests.Session()
     session.headers.update(
         {
@@ -225,6 +243,8 @@ def build_session(api_token: str) -> requests.Session:
 
 
 def retry_delay(response: requests.Response | None, attempt: int) -> float:
+    """Calculate how long to wait before retrying a temporary API failure."""
+
     if response is not None:
         retry_after = response.headers.get("Retry-After")
         if retry_after:
@@ -249,6 +269,8 @@ def get_event_page(
     start_date: date,
     end_date: date,
 ) -> list[dict[str, Any]]:
+    """Fetch and validate one page of events, retrying only transient failures."""
+
     params = {
         "media_id": media_id,
         "page": page,
@@ -332,6 +354,8 @@ def s3_key_for_events(
     media_id: str,
     run_id: str,
 ) -> str:
+    """Build the partitioned S3 object key for one media extraction file."""
+
     return (
         f"{prefix}/extraction_date={extraction_time:%Y-%m-%d}/"
         f"media_id={media_id}/events_{extraction_time:%Y%m%dT%H%M%SZ}_{run_id}.jsonl.gz"
@@ -348,6 +372,8 @@ def write_media_events(
     extraction_time: datetime,
     run_id: str,
 ) -> dict[str, Any]:
+    """Fetch every page for one media ID and upload one gzip JSONL object."""
+
     page = 1
     event_count = 0
     page_count = 0
@@ -363,6 +389,8 @@ def write_media_events(
         ) as temporary_file:
             temporary_path = temporary_file.name
             with gzip.GzipFile(fileobj=temporary_file, mode="wb", mtime=0) as compressed_file:
+                # Fetch one API page at a time so large extractions stay bounded
+                # in memory while still producing one file per media ID.
                 while True:
                     events = get_event_page(session, media_id, page, start_date, end_date)
                     if not events:
@@ -438,6 +466,8 @@ def write_manifest(
     end_date: date,
     results: list[dict[str, Any]],
 ) -> str:
+    """Write a run manifest that tells downstream jobs exactly what was created."""
+
     manifest_key = (
         f"{config.manifest_prefix}/extraction_date={extraction_time:%Y-%m-%d}/"
         f"manifest_{extraction_time:%Y%m%dT%H%M%SZ}_{run_id}.json"
@@ -478,6 +508,8 @@ def publish_ingestion_workflow_properties(
     start_date: date,
     end_date: date,
 ) -> None:
+    """Publish run lineage so the next Glue Workflow jobs use this manifest."""
+
     if not config.workflow_name and not config.workflow_run_id:
         LOGGER.info("No Glue workflow context found; skipping workflow property publication.")
         return
@@ -505,6 +537,8 @@ def publish_ingestion_workflow_properties(
 
 
 def main() -> None:
+    """Run extraction for every configured media ID and publish its manifest."""
+
     configure_logging()
     config = load_config()
     extraction_time = datetime.now(timezone.utc)
@@ -525,6 +559,7 @@ def main() -> None:
         run_id,
     )
 
+    # Shared clients are created once and reused for the full extraction.
     api_token = get_api_token(config.secret_id, config.secret_region)
     session = build_session(api_token)
     s3_client = boto3.client("s3")

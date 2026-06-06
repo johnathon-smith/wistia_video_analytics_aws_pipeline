@@ -13,6 +13,8 @@ from deltalake import DeltaTable
 
 @dataclass(frozen=True)
 class DashboardConfig:
+    """Validated AWS credentials and Delta table locations from Streamlit secrets."""
+
     curated_table_uri: str
     media_table_uri: str | None
     visitors_table_uri: str | None
@@ -23,6 +25,8 @@ class DashboardConfig:
 
     @classmethod
     def from_secrets(cls, secrets: Mapping[str, Any]) -> "DashboardConfig":
+        """Build dashboard configuration from Streamlit's TOML secrets mapping."""
+
         aws = secrets["aws"]
         tables = secrets["tables"]
         curated_uri = str(tables["visitor_engagement_uri"]).rstrip("/")
@@ -39,6 +43,8 @@ class DashboardConfig:
         )
 
     def storage_options(self) -> dict[str, str]:
+        """Translate secrets into the option names expected by delta-rs."""
+
         options = {
             "AWS_REGION": self.aws_region,
             "AWS_ACCESS_KEY_ID": self.aws_access_key_id,
@@ -50,12 +56,16 @@ class DashboardConfig:
 
 
 def _optional_string(value: Any) -> str | None:
+    """Return a stripped optional value, treating blanks as missing."""
+
     if value is None or not str(value).strip():
         return None
     return str(value).strip()
 
 
 def _optional_s3_uri(value: Any) -> str | None:
+    """Normalize an optional S3 location and reject non-S3 paths."""
+
     parsed = _optional_string(value)
     if parsed is None:
         return None
@@ -69,6 +79,8 @@ def validate_columns(
     required: set[str],
     table_name: str,
 ) -> None:
+    """Fail early when a Delta table is missing columns the dashboard needs."""
+
     missing = sorted(required.difference(frame.columns))
     if missing:
         raise ValueError(
@@ -77,6 +89,8 @@ def validate_columns(
 
 
 def normalize_engagement(frame: pd.DataFrame) -> pd.DataFrame:
+    """Validate the curated model and convert its watch dates to timestamps."""
+
     required = {
         "visitor_id",
         "media_id",
@@ -100,6 +114,8 @@ def normalize_engagement(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def pipeline_metadata(frame: pd.DataFrame) -> dict[str, Any]:
+    """Read freshness and lineage values stored on the curated table rows."""
+
     metadata: dict[str, Any] = {}
     if "data_through_date" in frame.columns:
         values = pd.to_datetime(frame["data_through_date"], errors="coerce").dropna()
@@ -123,6 +139,8 @@ def enrich_dashboard_data(
     media: pd.DataFrame | None,
     visitors: pd.DataFrame | None,
 ) -> pd.DataFrame:
+    """Join optional dimensions onto the curated engagement aggregates."""
+
     enriched = normalize_engagement(engagement)
 
     if media is not None:
@@ -167,6 +185,8 @@ def _read_delta(
     uri: str,
     storage_options: dict[str, str],
 ) -> tuple[pd.DataFrame, int]:
+    """Read one Delta table from S3 and return its rows and Delta version."""
+
     table = DeltaTable(uri, storage_options=storage_options)
     return table.to_pandas(), table.version()
 
@@ -175,6 +195,8 @@ def _read_delta(
 def load_dashboard_data(
     config: DashboardConfig,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Load, enrich, and cache every dataset needed by the dashboard."""
+
     options = config.storage_options()
     engagement, curated_version = _read_delta(config.curated_table_uri, options)
     freshness = pipeline_metadata(engagement)

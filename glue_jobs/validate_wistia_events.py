@@ -91,6 +91,8 @@ class WistiaValidationError(RuntimeError):
 
 @dataclass(frozen=True)
 class JobConfig:
+    """All validation inputs and output prefixes after argument parsing."""
+
     job_name: str
     input_manifest_uri: str | None
     raw_prefix: str
@@ -102,6 +104,8 @@ class JobConfig:
 
 @dataclass(frozen=True)
 class ValidationIssue:
+    """One reason a source record failed validation."""
+
     code: str
     field: str
     message: str
@@ -112,6 +116,8 @@ class ValidationIssue:
 
 @dataclass
 class ValidationStats:
+    """Running counts collected while source records are streamed."""
+
     total_records: int = 0
     valid_records: int = 0
     quarantined_records: int = 0
@@ -119,6 +125,8 @@ class ValidationStats:
 
 
 def configure_logging() -> None:
+    """Send consistently formatted validation messages to CloudWatch Logs."""
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -127,6 +135,8 @@ def configure_logging() -> None:
 
 
 def parse_optional_argument(name: str, default: str | None = None) -> str | None:
+    """Read an optional --NAME value from the Glue job command line."""
+
     flag = f"--{name}"
     if flag not in sys.argv:
         return default
@@ -137,6 +147,8 @@ def parse_optional_argument(name: str, default: str | None = None) -> str | None
 
 
 def load_config() -> JobConfig:
+    """Build one configuration object from Glue arguments and defaults."""
+
     required = getResolvedOptions(sys.argv, ["JOB_NAME"])
     raw_prefix = parse_optional_argument("RAW_PREFIX", "raw/wistia/events")
     quarantine_prefix = parse_optional_argument(
@@ -161,6 +173,8 @@ def load_config() -> JobConfig:
 
 
 def parse_s3_uri(uri: str) -> tuple[str, str]:
+    """Split an S3 URI into bucket and object key, rejecting invalid values."""
+
     parsed = urlparse(uri)
     if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
         raise WistiaValidationError(f"Invalid S3 URI: {uri!r}.")
@@ -168,6 +182,8 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def workflow_context(config: JobConfig) -> tuple[str, str] | None:
+    """Return complete workflow identifiers or fail on a partial configuration."""
+
     if not config.workflow_name and not config.workflow_run_id:
         return None
     if not config.workflow_name or not config.workflow_run_id:
@@ -178,6 +194,8 @@ def workflow_context(config: JobConfig) -> tuple[str, str] | None:
 
 
 def resolve_manifest_uri(glue_client: Any, config: JobConfig) -> str:
+    """Use a manual manifest override or read the current workflow property."""
+
     if config.input_manifest_uri:
         return config.input_manifest_uri
 
@@ -209,6 +227,8 @@ def resolve_manifest_uri(glue_client: Any, config: JobConfig) -> str:
 
 
 def read_json_object(s3_client: Any, uri: str) -> dict[str, Any]:
+    """Download one S3 JSON object and require a top-level JSON object."""
+
     bucket, key = parse_s3_uri(uri)
     try:
         body = s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
@@ -221,6 +241,8 @@ def read_json_object(s3_client: Any, uri: str) -> dict[str, Any]:
 
 
 def manifest_sources(manifest: dict[str, Any]) -> list[str]:
+    """Extract and validate the list of ingestion files from a manifest."""
+
     results = manifest.get("results")
     if not isinstance(results, list):
         raise WistiaValidationError("Ingestion manifest results must be an array.")
@@ -236,6 +258,8 @@ def manifest_sources(manifest: dict[str, Any]) -> list[str]:
 
 
 def is_type(value: Any, expected: str) -> bool:
+    """Apply the validator's strict JSON type rules to one value."""
+
     if expected == "string":
         return isinstance(value, str)
     if expected == "number":
@@ -256,6 +280,8 @@ def is_type(value: Any, expected: str) -> bool:
 
 
 def expected_type_label(expected: Any) -> str:
+    """Turn a schema type declaration into a readable error-message label."""
+
     if isinstance(expected, tuple):
         return " or ".join(expected)
     if isinstance(expected, dict):
@@ -264,6 +290,8 @@ def expected_type_label(expected: Any) -> str:
 
 
 def validate_value(value: Any, expected: Any, field: str) -> list[ValidationIssue]:
+    """Check one field's type and any field-specific business rules."""
+
     if value is None:
         return []
     if isinstance(expected, tuple):
@@ -299,6 +327,8 @@ def find_unknown_fields(
     schema: dict[str, Any],
     prefix: str = "",
 ) -> set[str]:
+    """Return fields not present in the expected schema as additive drift."""
+
     unknown: set[str] = set()
     for field, child_value in value.items():
         path = f"{prefix}.{field}" if prefix else field
@@ -311,6 +341,8 @@ def find_unknown_fields(
 
 
 def validate_event(event: Any) -> tuple[list[ValidationIssue], set[str]]:
+    """Validate one event and return blocking issues plus additive fields."""
+
     if not isinstance(event, dict):
         return (
             [
@@ -366,6 +398,8 @@ def output_keys(
     manifest: dict[str, Any],
     config: JobConfig,
 ) -> tuple[str, str, str]:
+    """Build matching raw, quarantine, and report keys for this run."""
+
     run_id = manifest.get("run_id")
     extracted_at = manifest.get("extracted_at")
     if not isinstance(run_id, str) or not run_id:
@@ -390,6 +424,8 @@ def output_keys(
 
 
 def open_source_lines(s3_client: Any, uri: str) -> tuple[BinaryIO, BinaryIO]:
+    """Open an ingestion object as a stream of decompressed JSONL bytes."""
+
     bucket, key = parse_s3_uri(uri)
     try:
         body = s3_client.get_object(Bucket=bucket, Key=key)["Body"]
@@ -399,6 +435,8 @@ def open_source_lines(s3_client: Any, uri: str) -> tuple[BinaryIO, BinaryIO]:
 
 
 def write_json_line(file_object: BinaryIO, value: Any) -> None:
+    """Serialize one compact JSON value followed by a newline."""
+
     file_object.write(
         json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     )
@@ -412,6 +450,8 @@ def upload_gzip_file(
     key: str,
     metadata: dict[str, str],
 ) -> None:
+    """Upload a completed local gzip file with useful S3 metadata."""
+
     try:
         s3_client.upload_file(
             local_path,
@@ -435,6 +475,8 @@ def process_manifest(
     manifest_uri: str,
     validation_time: datetime,
 ) -> dict[str, Any]:
+    """Stream all manifest files, route each record, and write a run report."""
+
     manifest_bucket, _ = parse_s3_uri(manifest_uri)
     manifest = read_json_object(s3_client, manifest_uri)
     sources = manifest_sources(manifest)
@@ -465,6 +507,8 @@ def process_manifest(
                     try:
                         for line_number, raw_line in enumerate(source_lines, start=1):
                             stats.total_records += 1
+                            # Malformed JSON cannot be validated as an event, but
+                            # the original line is preserved for investigation.
                             try:
                                 event = json.loads(raw_line)
                             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -534,6 +578,8 @@ def process_manifest(
             "manifest-uri": manifest_uri,
         }
         upload_gzip_file(s3_client, raw_path, manifest_bucket, raw_key, metadata)
+        # Avoid empty quarantine objects so an S3 create event always means
+        # that a genuine data-quality problem was found.
         if stats.quarantined_records > 0:
             upload_gzip_file(
                 s3_client,
@@ -594,6 +640,8 @@ def publish_validation_workflow_properties(
     config: JobConfig,
     report: dict[str, Any],
 ) -> None:
+    """Publish the report location and counts for downstream workflow jobs."""
+
     context = workflow_context(config)
     if context is None:
         LOGGER.info("No Glue workflow context found; skipping validation property publication.")
@@ -621,6 +669,8 @@ def publish_validation_workflow_properties(
 
 
 def main() -> None:
+    """Resolve the current manifest, validate it, and publish the results."""
+
     configure_logging()
     config = load_config()
     s3_client = boto3.client("s3")
