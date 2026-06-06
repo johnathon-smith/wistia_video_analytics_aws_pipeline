@@ -31,7 +31,23 @@ The initial two-year backfill processed **56,153 Wistia engagement events**. The
 same pipeline now runs incrementally each day and can replay an explicit date
 range when historical recovery is needed.
 
+## Visual Tour
+
+### Streamlit Dashboard
+
+![Streamlit dashboard overview](docs/screenshots/dashboard-overview.png)
+
+![Audience quality analysis](docs/screenshots/dashboard-audience-quality.png)
+
+### Orchestration and Delivery
+
+![AWS Glue Workflow successful run](docs/screenshots/glue-workflow.png)
+
+![GitHub Actions successful CI/CD run](docs/screenshots/github-actions-ci-cd.png)
+
 ## Architecture
+
+![Architecture Diagram](docs/screenshots/architecture-diagram.png)
 
 ```mermaid
 flowchart LR
